@@ -1,0 +1,277 @@
+
+!pip install pandas numpy scikit-learn gensim bertopic google-play-scraper sentence-transformers
+!git clone https://github.com/rwalk/gsdmm.git
+%cd gsdmm
+!pip install .
+%cd ..
+
+# Core libraries
+import pandas as pd
+import numpy as np
+import re
+
+# NLP & clustering
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
+
+# Transformers
+from transformers import pipeline
+
+# BERTopic & GSDMM
+# If not installed, uncomment these:
+!pip install bertopic
+!pip install gensim
+!pip install sentence-transformers
+
+from bertopic import BERTopic
+from sentence_transformers import SentenceTransformer
+
+# Load your dataset
+df = pd.read_csv("googleplaystore_user_reviews.csv")  # Adjust path if needed
+
+# Basic cleaning function
+def clean_text(text):
+    text = re.sub(r'<[^>]+>', '', str(text))  # Remove HTML tags
+    text = re.sub(r'[^\w\s]', '', text.lower())  # Remove punctuation and lowercase
+    text = re.sub(r'\d+', '', text)  # Remove numbers
+    return text.strip()
+
+# Apply cleaning to 'content' column
+df['cleaned'] = df['content'].apply(clean_text)
+
+# Drop rows with empty or null cleaned text
+df = df[df['cleaned'].str.strip().astype(bool)]
+df.reset_index(drop=True, inplace=True)
+
+# Preview
+df[['content', 'cleaned']].head()
+from sklearn.feature_extraction.text import TfidfVectorizer
+
+# Initialize TF-IDF
+tfidf = TfidfVectorizer(max_df=0.9, min_df=10, stop_words='english')
+
+# Fit and transform the cleaned reviews
+X_tfidf = tfidf.fit_transform(df['cleaned'])
+
+# Print shape for sanity check
+print(f"TF-IDF matrix shape: {X_tfidf.shape}")
+
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
+
+# Initialize and fit KMeans
+kmeans = KMeans(n_clusters=10, random_state=42)
+df['cluster'] = kmeans.fit_predict(X_tfidf)
+
+# Evaluate clustering quality
+score = silhouette_score(X_tfidf, df['cluster'])
+print(f"Silhouette Score: {score:.3f}")
+
+# Get feature names from TF-IDF
+terms = tfidf.get_feature_names_out()
+order_centroids = kmeans.cluster_centers_.argsort()[:, ::-1]
+
+# Print top 10 terms per cluster
+for i in range(10):
+    top_terms = [terms[ind] for ind in order_centroids[i, :10]]
+    print(f"Cluster {i}: {', '.join(top_terms)}")
+
+# Sample 3 reviews from each of the first 5 clusters
+for i in range(5):
+    print(f"\n📌 Cluster {i} Samples:")
+    samples = df[df['cluster'] == i]['content'].sample(3, random_state=42).to_list()
+    for idx, review in enumerate(samples, 1):
+        print(f"{idx}. {review}")
+
+from transformers import pipeline
+
+# Load Flan-T5 model for text2text generation
+generator = pipeline("text2text-generation", model="google/flan-t5-base")
+
+# Example vague review
+vague_review = "App crashes often and doesn't load properly"
+prompt = f"Respond to user complaint: '{vague_review}'"
+
+# Generate response
+response = generator(prompt, max_length=50, do_sample=True)
+print("Generated Response:", response[0]['generated_text'])
+
+
+from bertopic import BERTopic
+from sentence_transformers import SentenceTransformer
+
+# Load sentence transformer model for embeddings
+embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+
+# Generate embeddings from cleaned reviews
+embeddings = embedding_model.encode(df['cleaned'].tolist(), show_progress_bar=True)
+
+# Fit BERTopic model
+topic_model = BERTopic()
+topics, probs = topic_model.fit_transform(df['cleaned'].tolist(), embeddings)
+
+# Assign topics to DataFrame
+df['bertopic_cluster'] = topics
+
+# Show top 10 topics
+topic_model.get_topic_info().head(10)
+
+# Install GSDMM if needed
+# !pip install gsdmm
+
+from gsdmm import MovieGroupProcess
+from sklearn.feature_extraction.text import CountVectorizer
+
+# Tokenize reviews for GSDMM
+df['tokens'] = df['cleaned'].apply(lambda x: x.split())
+
+# Initialize GSDMM
+mgp = MovieGroupProcess(K=20, alpha=0.1, beta=0.3, n_iters=30)
+
+# Fit model
+vocab = set(word for doc in df['tokens'] for word in doc)
+n_terms = len(vocab)
+doc_list = df['tokens'].tolist()
+
+mgp.fit(doc_list, n_terms)
+
+# Assign cluster labels
+df['gsdmm_cluster'] = [mgp.choose_best_label(doc)[0] for doc in doc_list]
+
+# Show top 10 clusters
+from collections import Counter
+print("Top GSDMM clusters:", Counter(df['gsdmm_cluster']).most_common(10))
+
+from collections import Counter
+
+# TF-IDF + KMeans
+print("\n🔹 TF-IDF + KMeans:")
+print("Top clusters:", Counter(df['cluster']).most_common(5))
+
+# BERTopic
+print("\n🔹 BERTopic:")
+print("Top topics:", Counter(df['bertopic_cluster']).most_common(5))
+
+# GSDMM
+print("\n🔹 GSDMM:")
+print("Top clusters:", Counter(df['gsdmm_cluster']).most_common(5))
+
+# Filter vague reviews: short length or low score
+vague_df = df[(df['score'] <= 2) | (df['cleaned'].str.len() < 40)].copy()
+
+# Load Flan-T5 pipeline
+generator = pipeline("text2text-generation", model="google/flan-t5-base")
+
+# Generate responses for first 5 vague reviews
+for i, row in vague_df.head(5).iterrows():
+    prompt = f"Respond to user complaint: '{row['content']}'"
+    response = generator(prompt, max_length=50, do_sample=True)
+    print(f"\n🗣️ Original: {row['content']}")
+    print(f"🤖 Response: {response[0]['generated_text']}")
+
+# Select relevant columns for export
+export_cols = [
+    'reviewId', 'userName', 'content', 'score',
+    'cleaned', 'cluster', 'bertopic_cluster', 'gsdmm_cluster'
+]
+
+# Export to CSV
+df[export_cols].to_csv("revai_clustered_reviews.csv", index=False)
+
+print(" Export complete: revai_clustered_reviews.csv")
+
+from tqdm import tqdm
+
+# Reload Flan-T5 pipeline if needed
+generator = pipeline("text2text-generation", model="google/flan-t5-base")
+
+# Filter vague reviews (short or low score)
+vague_df = df[(df['score'] <= 2) | (df['cleaned'].str.len() < 40)].copy()
+
+# Initialize response column
+vague_df['flan_response'] = ""
+
+# Generate responses
+for i, row in tqdm(vague_df.iterrows(), total=len(vague_df)):
+    prompt = f"Respond to user complaint: '{row['content']}'"
+    try:
+        response = generator(prompt, max_length=50, do_sample=True)
+        vague_df.at[i, 'flan_response'] = response[0]['generated_text']
+    except Exception as e:
+        vague_df.at[i, 'flan_response'] = "Error generating response"
+
+# Merge responses back into main DataFrame
+df = df.merge(vague_df[['reviewId', 'flan_response']], on='reviewId', how='left')
+
+# Export final enriched dataset
+df.to_csv("revai_clustered_with_responses.csv", index=False)
+print(" Export complete: revai_clustered_with_responses.csv")
+
+from gensim.models import Word2Vec
+from sklearn.cluster import KMeans
+import numpy as np
+
+# Train Word2Vec on tokenized reviews
+tokenized_reviews = df['cleaned'].apply(lambda x: x.split())
+w2v_model = Word2Vec(sentences=tokenized_reviews, vector_size=100, window=5, min_count=5, workers=4)
+
+# Create sentence embeddings by averaging word vectors
+def get_sentence_vector(tokens):
+    vectors = [w2v_model.wv[word] for word in tokens if word in w2v_model.wv]
+    return np.mean(vectors, axis=0) if vectors else np.zeros(w2v_model.vector_size)
+
+df['w2v_vector'] = tokenized_reviews.apply(get_sentence_vector)
+
+# Stack vectors into matrix
+X_w2v = np.vstack(df['w2v_vector'].values)
+
+# Cluster using KMeans
+w2v_kmeans = KMeans(n_clusters=10, random_state=42)
+df['w2v_cluster'] = w2v_kmeans.fit_predict(X_w2v)
+
+print(" Word2Vec clustering complete. Sample clusters:", df['w2v_cluster'].value_counts().head())
+
+from transformers import pipeline
+
+# Load zero-shot classification pipeline
+classifier = pipeline("zero-shot-classification", model="distilbert-base-uncased")
+
+# Define labels
+labels = ["vague", "detailed"]
+
+# Classify first 10 reviews
+df['distilbert_label'] = ""
+
+for i, row in df.head(10).iterrows():
+    result = classifier(row['content'], candidate_labels=labels)
+    df.at[i, 'distilbert_label'] = result['labels'][0]
+
+print(df[['content', 'distilbert_label']].head(10))
+
+from tqdm import tqdm
+
+# Reload Flan-T5 pipeline if needed
+generator = pipeline("text2text-generation", model="google/flan-t5-base")
+
+# Filter reviews labeled as vague
+vague_reviews = df[df['distilbert_label'] == "vague"].copy()
+vague_reviews['flan_response'] = ""
+
+# Generate responses
+for i, row in tqdm(vague_reviews.iterrows(), total=len(vague_reviews)):
+    prompt = f"Respond to user complaint: '{row['content']}'"
+    try:
+        response = generator(prompt, max_length=50, do_sample=True)
+        vague_reviews.at[i, 'flan_response'] = response[0]['generated_text']
+    except Exception:
+        vague_reviews.at[i, 'flan_response'] = "Error generating response"
+
+# Merge responses back into main DataFrame
+df = df.merge(vague_reviews[['reviewId', 'flan_response']], on='reviewId', how='left')
+
+print(" Flan-T5 responses generated for vague reviews only.")
+
+# Export enriched dataset with all clusters and responses
+df.to_csv("revai_full_pipeline_output.csv", index=False)
+print("📦 Final export complete: revai_full_pipeline_output.csv")
